@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Migration of bigip virtual server with Ansible Playbook.
 
 1. Edit the hosts file with source and destination systems
