@@ -1,0 +1,82 @@
+---
+
+- name: BIGIP Ansible Migration - Step 1 on source system ...
+  hosts: bigip_src
+  tasks:
+  - name: Virtual Server ...
+    shell: "tmsh list ltm virtual {{ bigip_virt_migrate }} > /tmp/{{ bigip_virt_migrate }}_tempfile_.virt"
+  - name: Pool ...
+    shell: "tmsh list ltm pool $(tmsh list ltm virtual {{ bigip_virt_migrate }} pool | grep pool | awk '{print $2;}') > /tmp/{{ bigip_virt_migrate }}_tempfile_.pool"
+  - name: iRules, step 1 ...
+    shell: "tmsh list ltm virtual {{ bigip_virt_migrate }} rules | sed -n '/rules {/,/}/p' | sed -e '2,$!d' -e '$d' | awk '{print $1}'"
+    register: virtual_irules
+  - name: iRules, step 2 ...
+    shell: "tmsh list ltm rule {{ item }} > /tmp/{{ bigip_virt_migrate }}_tempfile_{{ item }}.rule"
+    with_items: "{{ virtual_irules.stdout_lines }}"
+  - name: Fetch remote files, step 1 ...
+    find:
+     paths: /tmp
+     patterns: '{{ bigip_virt_migrate }}_tempfile_*'
+    register: files_to_fetch
+  - name: Fetch remote files, step 2 ...
+    fetch:
+     src: "{{ item.path }}"
+     dest: "{{ item.path }}"
+     flat: yes
+    with_items: "{{ files_to_fetch.files }}"
+  - name: Delete remote files ...
+    file:
+     path: "{{ item.path }}"
+     state: absent
+    with_items: "{{ files_to_fetch.files }}"
+     
+- name: BIGIP Ansible Migration - Step 2 on destination system ...
+  hosts: bigip_dst
+  tasks:
+  - name: Registering variables, step 1 ...
+    find:
+     paths: /tmp
+     patterns: '{{ bigip_virt_migrate }}_tempfile_*.rule'
+    delegate_to: localhost
+    register: irules_to_fetch
+  - name: Registering variables, step 2 ...
+    find:
+     paths: /tmp
+     patterns: '{{ bigip_virt_migrate }}_tempfile_*'
+    delegate_to: localhost
+    register: files_to_fetch
+  - name: Uploading files to destination ...
+    copy:
+     src: "{{ item.path }}"
+     dest: "{{ item.path }}"
+     force: yes
+    with_items: "{{ files_to_fetch.files }}"
+  - name: Clone pool ...
+    shell: "tmsh load sys config merge file /tmp/{{ bigip_virt_migrate }}_tempfile_.pool"
+  - name: Clone iRules ...
+    shell: "tmsh load sys config merge file {{ item.path }}"
+    with_items: "{{ irules_to_fetch.files }}"
+  - name: Clone virtual server ...
+    shell: "tmsh load sys config merge file /tmp/{{ bigip_virt_migrate }}_tempfile_.virt"
+  - name: Cleaning up, step 1 ...
+    file:
+     path: "{{ item.path }}"
+     state: absent
+    with_items: "{{ files_to_fetch.files }}"
+  - name: Cleaning up, step 2 ...
+    file:
+     path: "{{ item.path }}"
+     state: absent
+    with_items: "{{ files_to_fetch.files }}"
+    delegate_to: localhost
+
+- name: BIGIP Ansible Migration - Step 3 on source system ...
+  hosts: bigip_src
+  tasks:
+  - name: Disable duplicates, step 1 ...
+    shell: "tmsh modify ltm virtual {{ bigip_virt_migrate }} disabled" 
+  - name: Disable duplicates, step 2 ...
+    shell: "tmsh modify ltm virtual-address $(tmsh list ltm virtual {{ bigip_virt_migrate }} destination | sed -n '/{{ bigip_virt_migrate }} {/,/}/p' | sed -e '2,$!d' -e '$d' | awk '{print $2}' | sed 's/:.*//') arp disabled"
+  - name: Disable duplicates, step 3 ...
+    shell: "tmsh modify ltm virtual-address $(tmsh list ltm virtual {{ bigip_virt_migrate }} destination | sed -n '/{{ bigip_virt_migrate }} {/,/}/p' | sed -e '2,$!d' -e '$d' | awk '{print $2}' | sed 's/:.*//') enabled no"
+
